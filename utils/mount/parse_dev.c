@@ -39,6 +39,58 @@
 extern char *progname;
 extern int verbose;
 
+struct dev_name *dev_name_append (struct dev_name *list,
+                                  char *hostname, char *pathname)
+{
+  struct dev_name *item;
+
+  item = (struct dev_name *)malloc(sizeof(struct dev_name));
+  if (hostname == NULL)
+    item->hostname = NULL;
+  else
+    item->hostname = strdup(hostname);
+  if (pathname ==NULL)
+    item->pathname = NULL;
+  else
+    item->pathname = strdup(pathname);
+  item->next = NULL;
+
+  if (list==NULL) {
+    return item;
+  } else {
+    struct dev_name *last = list;
+    while (last->next != NULL)  last = last->next;
+    last->next = item;
+    return list;
+  }
+}
+
+struct dev_name *nfs_parse_multiple_hostname(char *dev)
+{
+  char *s;
+  char *hostname;
+  char *pathname;
+  struct dev_name *list=NULL;
+
+  while ((s = strchr(dev, ':'))) {
+    hostname = dev;
+    pathname = s + 1;
+    *s = '\0';
+    if ((s=strchr(pathname,','))) {
+      *s = '\0';
+      dev = s + 1;
+    }
+
+    while ((s=strchr(hostname,','))) {
+      *s = '\0';
+      list = dev_name_append(list, hostname, pathname);
+      hostname = s + 1;
+    }
+    list = dev_name_append(list, hostname, pathname);
+  }
+  return list;
+}
+
 static int nfs_pdn_no_devname_err(void)
 {
 	nfs_error(_("%s: no device name was provided"), progname);
@@ -195,38 +247,45 @@ static int nfs_parse_nfs_url(__attribute__((unused)) const char *dev,
 /**
  * nfs_parse_devname - Determine the server's hostname by looking at "devname".
  * @devname: pointer to mounted device name (first argument of mount command)
- * @hostname: OUT: pointer to server's hostname
- * @pathname: OUT: pointer to export path on server
  *
- * Returns 1 if succesful, or zero if some error occurred.  On success,
- * @hostname and @pathname point to dynamically allocated buffers containing
- * the hostname of the server and the export pathname (both '\0'-terminated).
- *
- * @hostname or @pathname may be NULL if caller doesn't want a copy of those
- * parts of @devname.
+ * Returns a struct dev_name with the information of the proper devname. If
+ * fails NULL is returned.
  *
  * Note that this will not work if @devname is a wide-character string.
  */
-int nfs_parse_devname(const char *devname,
-		      char **hostname, char **pathname)
+struct dev_name *nfs_parse_devname(const char *devname)
 {
 	char *dev;
-	int result;
+  char *hostname = NULL;
+  char *pathname = NULL;
+  struct dev_name *list = NULL;
 
-	if (devname == NULL)
-		return nfs_pdn_no_devname_err();
+  if (devname == NULL) {
+    nfs_pdn_no_devname_err();
+    return NULL;
+  }
+
+
 
 	/* Parser is destructive, so operate on a copy of the device name. */
 	dev = strdup(devname);
-	if (dev == NULL)
-		return nfs_pdn_nomem_err();
-	if (*dev == '[')
-		result = nfs_parse_square_bracket(dev, hostname, pathname);
-	else if (strncmp(dev, "nfs://", 6) == 0)
-		result = nfs_parse_nfs_url(dev, hostname, pathname);
-	else
-		result = nfs_parse_simple_hostname(dev, hostname, pathname);
+  if (dev == NULL) {
+    nfs_pdn_nomem_err();
+    return NULL;
+  }
+  if (*dev == '[') {
+    if (!nfs_parse_square_bracket(dev, &hostname, &pathname))
+      list = dev_name_append(NULL, hostname, pathname);
+  } else if (strncmp(dev, "nfs://", 6) == 0) {
+    if (!nfs_parse_nfs_url(dev, &hostname, &pathname))
+      list = dev_name_append(NULL, hostname, pathname);
+  } else if (strchr(dev, ':')) {
+    list = nfs_parse_multiple_hostname (dev);
+  } else {
+    if (!nfs_parse_simple_hostname(dev, &hostname, &pathname))
+      list = dev_name_append(NULL, hostname, pathname);
+  }
 
 	free(dev);
-	return result;
+	return list;
 }

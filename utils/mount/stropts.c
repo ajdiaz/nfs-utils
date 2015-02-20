@@ -223,7 +223,6 @@ static int nfs_append_addr_option(const struct sockaddr *sap,
 				  socklen_t salen,
 				  struct mount_options *options)
 {
-	po_remove_all(options, "addr");
 	return nfs_append_generic_address_option(sap, salen, "addr", options);
 }
 
@@ -384,7 +383,14 @@ static int nfs_set_version(struct nfsmount_info *mi)
  */
 static int nfs_validate_options(struct nfsmount_info *mi)
 {
-	if (!nfs_parse_devname(mi->spec, &mi->hostname, NULL))
+	struct addrinfo hint = {
+		.ai_protocol	= (int)IPPROTO_UDP,
+	};
+	sa_family_t family;
+	int error;
+	struct dev_name *item;
+
+  if ((mi->dev_list = nfs_parse_devname(mi->spec)) == NULL)
 		return 0;
 
 	if (!nfs_nfs_proto_family(mi->options, &mi->family))
@@ -397,12 +403,34 @@ static int nfs_validate_options(struct nfsmount_info *mi)
 	 * A non-remount will set 'addr' from ->hostname
 	 */
 	po_remove_all(mi->options, "addr");
+  item = mi->dev_list;
+  while (item) {
+    hint.ai_family = (int)family;
+    error = getaddrinfo(item->hostname, NULL, &hint, &item->address);
+
+    if (error != 0) {
+      nfs_error(_("%s: Failed to resolve server %s: %s"),
+                progname, item->hostname, gai_strerror(error));
+      item->address = NULL;
+
+      return 0;
+    }
+    item = item->next;
+  }
 
 	if (!nfs_set_version(mi))
 		return 0;
 
 	if (!nfs_append_sloppy_option(mi->options))
 		return 0;
+
+  item = mi->dev_list;
+  while (item) {
+    if (!nfs_append_addr_option(item->address->ai_addr,
+                                item->address->ai_addrlen, mi->options))
+      return 0;
+    item = item->next;
+  }
 
 	return 1;
 }
@@ -637,6 +665,9 @@ static int nfs_do_mount_v3v2(struct nfsmount_info *mi,
 {
 	struct mount_options *options = po_dup(mi->options);
 	int result = 0;
+	struct dev_name *item;
+
+
 
 	if (!options) {
 		errno = ENOMEM;
@@ -649,11 +680,16 @@ static int nfs_do_mount_v3v2(struct nfsmount_info *mi,
 		goto out_fail;
 	}
 
-	if (!nfs_fix_mounthost_option(options, mi->hostname)) {
-		if (errno == 0)
-			errno = EINVAL;
-		goto out_fail;
-	}
+  item = mi->dev_list;
+  while (item) {
+    if (!nfs_fix_mounthost_option(options, item->hostname)) {
+
+      if (errno == 0)
+        errno = EINVAL;
+      goto out_fail;
+    }
+  }
+
 	if (!mi->fake && !nfs_verify_lock_option(options)) {
 		if (errno == 0)
 			errno = EINVAL;
@@ -695,24 +731,29 @@ static int nfs_try_mount_v3v2(struct nfsmount_info *mi, int checkv4)
 {
 	struct addrinfo *ai;
 	int ret = 0;
+	struct dev_name *item;
 
-	for (ai = mi->address; ai != NULL; ai = ai->ai_next) {
-		ret = nfs_do_mount_v3v2(mi, ai->ai_addr, ai->ai_addrlen, checkv4);
-		if (ret != 0)
-			return ret;
+  item = mi->dev_list;
+  while (item) {
+    for (ai = item->address; ai != NULL; ai = ai->ai_next) {
+      ret = nfs_do_mount_v3v2(mi, ai->ai_addr, ai->ai_addrlen, checkv4);
+      if (ret != 0)
+        return ret;
 
-		switch (errno) {
-		case ECONNREFUSED:
-		case EOPNOTSUPP:
-		case EHOSTUNREACH:
-		case ETIMEDOUT:
-		case EACCES:
-			continue;
-		default:
-			goto out;
-		}
-	}
-out:
+      switch (errno) {
+        case ECONNREFUSED:
+        case EOPNOTSUPP:
+        case EHOSTUNREACH:
+        case ETIMEDOUT:
+        case EACCES:
+          continue;
+        default:
+          break;
+      }
+    }
+    /*break*/
+    item=item->next;
+  }
 	return ret;
 }
 
@@ -814,23 +855,28 @@ static int nfs_try_mount_v4(struct nfsmount_info *mi)
 {
 	struct addrinfo *ai;
 	int ret = 0;
+	struct dev_name *item;
 
-	for (ai = mi->address; ai != NULL; ai = ai->ai_next) {
-		ret = nfs_do_mount_v4(mi, ai->ai_addr, ai->ai_addrlen);
-		if (ret != 0)
-			return ret;
+  item = mi->dev_list;
+  while (item) {
+    for (ai = item->address; ai != NULL; ai = ai->ai_next) {
+      ret = nfs_do_mount_v4(mi, ai->ai_addr, ai->ai_addrlen);
+      if (ret != 0)
+        return ret;
 
-		switch (errno) {
-		case ECONNREFUSED:
-		case EHOSTUNREACH:
-		case ETIMEDOUT:
-		case EACCES:
-			continue;
-		default:
-			goto out;
-		}
-	}
-out:
+      switch (errno) {
+        case ECONNREFUSED:
+        case EHOSTUNREACH:
+        case ETIMEDOUT:
+        case EACCES:
+          continue;
+        default:
+          break;
+      }
+    }
+    /*break*/
+    item = item->next;
+  }
 	return ret;
 }
 
@@ -1084,7 +1130,8 @@ static int nfsmount_parent(struct nfsmount_info *mi)
 		return EX_FAIL;
 	}
 
-	sys_mount_errors(mi->hostname, errno, 1, 1);
+	sys_mount_errors(mi->dev_list->hostname, errno, 1, 1);
+
 	return EX_BG;
 }
 
@@ -1120,10 +1167,10 @@ static int nfsmount_child(struct nfsmount_info *mi)
 		if (time(NULL) > timeout)
 			break;
 
-		sys_mount_errors(mi->hostname, errno, 1, 1);
+	  sys_mount_errors(mi->dev_list->hostname, errno, 1, 1);
 	};
 
-	sys_mount_errors(mi->hostname, errno, 1, 0);
+	sys_mount_errors(mi->dev_list->hostname, errno, 1, 0);
 	return EX_FAIL;
 }
 
@@ -1209,6 +1256,7 @@ int nfsmount_string(const char *spec, const char *node, char *type,
 		.spec		= spec,
 		.node		= node,
 		.address	= NULL,
+		.dev_list = NULL,
 		.type		= type,
 		.extra_opts	= extra_opts,
 		.flags		= flags,
@@ -1216,6 +1264,7 @@ int nfsmount_string(const char *spec, const char *node, char *type,
 		.child		= child,
 	};
 	int retval = EX_FAIL;
+	struct dev_name *item;
 
 	mi.options = po_split(*extra_opts);
 	if (mi.options) {
@@ -1224,7 +1273,15 @@ int nfsmount_string(const char *spec, const char *node, char *type,
 	} else
 		nfs_error(_("%s: internal option parsing error"), progname);
 
-	freeaddrinfo(mi.address);
-	free(mi.hostname);
+  item = mi.dev_list;
+  while (item) {
+    freeaddrinfo(item->address);
+    if (item->hostname)
+      free(item->hostname);
+    if (item->pathname)
+      free(item->pathname);
+    item = item->next;
+  }
+
 	return retval;
 }

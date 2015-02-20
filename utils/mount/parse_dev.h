@@ -23,6 +23,13 @@
 #ifndef __NFS_UTILS_PARSE_DEV_HEADER
 #define __NFS_UTILS_PARSE_DEV_HEADER
 
-extern int	nfs_parse_devname(const char *, char **, char **);
+struct dev_name {
+  char *hostname;
+  struct addrinfo  *address;
+  char *pathname;
+  struct dev_name *next;
+};
+
+extern struct dev_name *nfs_parse_devname(const char *devname);
 
 #endif	/* __NFS_UTILS_PARSE_DEV */

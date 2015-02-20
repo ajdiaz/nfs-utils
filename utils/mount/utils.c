@@ -158,9 +158,13 @@ int nfs_umount23(const char *devname, char *string)
 	char *hostname = NULL, *dirname = NULL;
 	struct mount_options *options;
 	int result = EX_FAIL;
+	struct dev_name *list;
 
-	if (!nfs_parse_devname(devname, &hostname, &dirname))
+  if ((list=nfs_parse_devname(devname)) == NULL)
 		return EX_USAGE;
+
+	hostname = list->hostname;
+	dirname = list->pathname;
 
 	options = po_split(string);
 	if (options) {
