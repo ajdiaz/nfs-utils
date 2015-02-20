@@ -244,6 +244,9 @@ AC_LIBTIRPC
 dnl Check for -lcap
 AC_LIBCAP
 
+dnl Check for -lpthread
+AC_LIBPTHREAD
+
 # Check whether user wants TCP wrappers support
 AC_TCP_WRAPPERS
 
