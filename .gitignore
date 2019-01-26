@@ -33,6 +33,9 @@ support/include/config.h
 support/include/stamp-h1
 # file generated during compilation
 *.o
+*.lo
+*.la
+*.pc
 .libs
 lib*.a
 test-driver
@@ -55,6 +58,7 @@ utils/nfsdcltrack/nfsdcltrack
 utils/statd/statd
 tools/locktest/testlk
 tools/getiversion/getiversion
+tools/nfsconf/nfsconf
 support/export/mount.h
 support/export/mount_clnt.c
 support/export/mount_xdr.c
@@ -69,6 +73,7 @@ tests/nsm_client/nlm_sm_inter_clnt.c
 tests/nsm_client/nlm_sm_inter_svc.c
 tests/nsm_client/nlm_sm_inter_xdr.c
 utils/nfsidmap/nfsidmap
+utils/nfsref/nfsref
 systemd/nfs-server-generator
 systemd/rpc-pipefs-generator
 systemd/nfs-config.service

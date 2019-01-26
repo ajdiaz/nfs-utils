@@ -48,6 +48,7 @@
 #include "version.h"
 #include "parse_dev.h"
 #include "conffile.h"
+#include "misc.h"
 
 #ifndef NFS_PROGRAM
 #define NFS_PROGRAM	(100003)
@@ -228,7 +229,8 @@ static int nfs_append_addr_option(const struct sockaddr *sap,
 
 /*
  * Called to discover our address and append an appropriate 'clientaddr='
- * option to the options string.
+ * option to the options string. If the supplied 'clientaddr=' value does
+ * not match either IPV4/IPv6 any or a local address, then fail the mount.
  *
  * Returns 1 if 'clientaddr=' option created successfully or if
  * 'clientaddr=' option is already present; otherwise zero.
@@ -241,8 +243,27 @@ static int nfs_append_clientaddr_option(const struct sockaddr *sap,
 	struct sockaddr *my_addr = &address.sa;
 	socklen_t my_len = sizeof(address);
 
-	if (po_contains(options, "clientaddr") == PO_FOUND)
+	if (po_contains(options, "clientaddr") == PO_FOUND) {
+		char *addr = po_get(options, "clientaddr");
+		union nfs_sockaddr nfs_address;
+		struct sockaddr *nfs_saddr = &nfs_address.sa;
+		socklen_t nfs_salen = sizeof(nfs_address);
+
+		/* translate the input for clientaddr to nfs_sockaddr */
+		if (!nfs_string_to_sockaddr(addr, nfs_saddr, &nfs_salen))
+			return 0;
+
+		/* check for IPV4_ANY and IPV6_ANY */
+		if (nfs_is_inaddr_any(nfs_saddr))
+			return 1;
+
+		/* check if ip matches local network addresses */
+		if (!nfs_addr_matches_localips(nfs_saddr))
+			nfs_error(_("%s: [warning] supplied clientaddr=%s "
+				"does not match any existing network "
+				"addresses"), progname, addr);
 		return 1;
+	}
 
 	nfs_callback_address(sap, salen, my_addr, &my_len);
 
@@ -390,7 +411,10 @@ static int nfs_validate_options(struct nfsmount_info *mi)
 	int error;
 	struct dev_name *item;
 
-  if ((mi->dev_list = nfs_parse_devname(mi->spec)) == NULL)
+	if (!nfs_parse_devname(mi->spec, &mi->hostname, NULL))
+	/* For remount, ignore mi->spec: the kernel will. */
+	if (!(mi->flags & MS_REMOUNT) &&
+	    !nfs_parse_devname(mi->spec, &mi->hostname, NULL))
 		return 0;
 
 	if (!nfs_nfs_proto_family(mi->options, &mi->family))
@@ -800,8 +824,25 @@ static int nfs_do_mount_v4(struct nfsmount_info *mi,
 			fmt = "vers=%lu.%lu";
 			break;
 		}
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
 		snprintf(version_opt, sizeof(version_opt) - 1,
 			fmt, mi->version.major,
+			mi->version.minor);
+#pragma GCC diagnostic warning "-Wformat-nonliteral"
+
+		if (po_append(options, version_opt) == PO_FAILED) {
+			errno = EINVAL;
+			goto out_fail;
+		}
+	} else if (po_get(options, "minorversion") &&
+		linux_version_code() > MAKE_VERSION(3, 4, 0)) {
+		/*
+	 	 * convert minorversion= into vers=4.x
+	 	 */
+		po_remove_all(options, "minorversion");
+
+		snprintf(version_opt, sizeof(version_opt) - 1,
+			"vers=%lu.%lu", mi->version.major,
 			mi->version.minor);
 
 		if (po_append(options, version_opt) == PO_FAILED) {
@@ -1085,14 +1126,18 @@ static int nfsmount_fg(struct nfsmount_info *mi)
 		if (nfs_try_mount(mi))
 			return EX_SUCCESS;
 
-		if (errno == EBUSY)
-			/* The only cause of EBUSY is if exactly the desired
-			 * filesystem is already mounted.  That can arguably
-			 * be seen as success.  "mount -a" tries to optimise
-			 * out this case but sometimes fails.  Help it out
-			 * by pretending everything is rosy
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+		if (errno == EBUSY && is_mountpoint(mi->node)) {
+#pragma GCC diagnostic warning "-Wdiscarded-qualifiers"
+			/*
+			 * EBUSY can happen when mounting a filesystem that
+			 * is already mounted or when the context= are
+			 * different when using the -o sharecache
+			 *
+			 * Only error out in the latter case.
 			 */
 			return EX_SUCCESS;
+		}
 
 		if (nfs_is_permanent_error(errno))
 			break;

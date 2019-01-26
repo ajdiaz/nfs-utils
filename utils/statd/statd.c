@@ -225,16 +225,18 @@ static void set_nlm_port(char *type, int port)
 	fd = open(pathbuf, O_WRONLY);
 	if (fd < 0 && errno == ENOENT) {
 		/* probably module not loaded */
-		system("modprobe lockd");
+		if (system("modprobe lockd"))
+			{/* ignore return value */};
 		fd = open(pathbuf, O_WRONLY);
 	}
 	if (fd >= 0) {
 		if (write(fd, nbuf, strlen(nbuf)) != (ssize_t)strlen(nbuf))
-			fprintf(stderr, "%s: fail to set NLM %s port: %m\n",
-				name_p, type);
+			fprintf(stderr, "%s: fail to set NLM %s port: %s\n",
+				name_p, type, strerror(errno));
 		close(fd);
 	} else
-		fprintf(stderr, "%s: failed to open %s: %m\n", name_p, pathbuf);
+		fprintf(stderr, "%s: failed to open %s: %s\n", 
+			name_p, pathbuf, strerror(errno));
 }
 
 /*
@@ -273,7 +275,7 @@ int main (int argc, char **argv)
 	/* Set hostname */
 	MY_NAME = NULL;
 
-	conf_init(NFS_CONFFILE);
+	conf_init_file(NFS_CONFFILE);
 	xlog_from_conffile("statd");
 	out_port = conf_get_num("statd", "outgoing-port", out_port);
 	port = conf_get_num("statd", "port", port);

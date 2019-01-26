@@ -679,7 +679,7 @@ main(int argc, char **argv)
 	else
 		progname = argv[0];
 
-	conf_init(NFS_CONFFILE);
+	conf_init_file(NFS_CONFFILE);
 	xlog_from_conffile("mountd");
 	manage_gids = conf_get_bool("mountd", "manage-gids", manage_gids);
 	descriptors = conf_get_num("mountd", "descriptors", descriptors);
@@ -702,7 +702,7 @@ main(int argc, char **argv)
 	else
 		NFSCTL_TCPUNSET(_rpcprotobits);
 	for (vers = 2; vers <= 4; vers++) {
-		char tag[10];
+		char tag[20];
 		sprintf(tag, "vers%d", vers);
 		if (conf_get_bool("nfsd", tag, NFSCTL_VERISSET(nfs_version, vers)))
 			NFSCTL_VERSET(nfs_version, vers);

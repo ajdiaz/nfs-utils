@@ -63,7 +63,9 @@
 #include "err_util.h"
 #include "conffile.h"
 
-void
+struct state_paths etab;
+
+static void
 sig_die(int signal)
 {
 	/* destroy krb5 machine creds */
@@ -71,7 +73,7 @@ sig_die(int signal)
 	exit(0);
 }
 
-void
+static void
 sig_hup(int signal)
 {
 	/* don't exit on SIGHUP */
@@ -101,7 +103,7 @@ main(int argc, char *argv[])
 	char *principal = NULL;
 	char *s;
 
-	conf_init(NFS_CONFFILE); 
+	conf_init_file(NFS_CONFFILE);
 
 	s = conf_get_str("svcgssd", "principal");
 	if (!s)
@@ -110,6 +112,10 @@ main(int argc, char *argv[])
 		get_creds = 0;
 	else
 		principal = s;
+
+	verbosity = conf_get_num("svcgssd", "Verbosity", verbosity);
+	rpc_verbosity = conf_get_num("svcgssd", "RPC-Verbosity", rpc_verbosity);
+	idmap_verbosity = conf_get_num("svcgssd", "IDMAP-Verbosity", idmap_verbosity);
 
 	while ((opt = getopt(argc, argv, "fivrnp:")) != -1) {
 		switch (opt) {

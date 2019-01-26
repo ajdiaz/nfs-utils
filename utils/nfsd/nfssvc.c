@@ -25,6 +25,7 @@
 #include "nfslib.h"
 #include "xlog.h"
 #include "nfssvc.h"
+#include "../mount/version.h"
 
 #ifndef NFSD_FS_DIR
 #define NFSD_FS_DIR	  "/proc/fs/nfsd"
@@ -68,7 +69,7 @@ nfssvc_mount_nfsdfs(char *progname)
 	 * mount nfsdfs when nfsd.ko is plugged in. So, ignore the return
 	 * code from it and just check for the "threads" file afterward.
 	 */
-	system("/bin/mount -t nfsd nfsd " NFSD_FS_DIR " >/dev/null 2>&1");
+	err = system("/bin/mount -t nfsd nfsd " NFSD_FS_DIR " >/dev/null 2>&1");
 
 	err = stat(NFSD_THREAD_FILE, &statbuf);
 	if (err == 0)
@@ -325,7 +326,8 @@ nfssvc_set_time(const char *type, const int seconds)
 		/* set same value for lockd */
 		fd = open("/proc/sys/fs/nfs/nlm_grace_period", O_WRONLY);
 		if (fd >= 0) {
-			write(fd, nbuf, strlen(nbuf));
+			if (write(fd, nbuf, strlen(nbuf)) != (ssize_t)strlen(nbuf))
+				xlog(L_ERROR, "Unable to write nlm_grace_period : %m");
 			close(fd);
 		}
 	}
@@ -368,16 +370,18 @@ out:
 
 static int
 nfssvc_print_vers(char *ptr, unsigned size, unsigned vers, unsigned minorvers,
-		int isset)
+		int isset, int force4dot0)
 {
 	char sign = isset ? '+' : '-';
 	if (minorvers == 0)
-		return snprintf(ptr, size, "%c%u ", sign, vers);
+		if (linux_version_code() < MAKE_VERSION(4, 11, 0) || !force4dot0)
+			return snprintf(ptr, size, "%c%u ", sign, vers);
 	return snprintf(ptr, size, "%c%u.%u ", sign, vers, minorvers);
 }
 
 void
-nfssvc_setvers(unsigned int ctlbits, unsigned int minorvers, unsigned int minorversset)
+nfssvc_setvers(unsigned int ctlbits, unsigned int minorvers, unsigned int minorversset,
+	       int force4dot0)
 {
 	int fd, n, off;
 
@@ -388,13 +392,14 @@ nfssvc_setvers(unsigned int ctlbits, unsigned int minorvers, unsigned int minorv
 
 	for (n = NFSD_MINVERS; n <= ((NFSD_MAXVERS < 3) ? NFSD_MAXVERS : 3); n++)
 		off += nfssvc_print_vers(&buf[off], sizeof(buf) - off,
-				n, 0, NFSCTL_VERISSET(ctlbits, n));
+				n, 0, NFSCTL_VERISSET(ctlbits, n), 0);
 
 	for (n = 0; n <= NFS4_MAXMINOR; n++) {
 		if (!NFSCTL_MINORISSET(minorversset, n))
 			continue;
 		off += nfssvc_print_vers(&buf[off], sizeof(buf) - off,
-				4, n, NFSCTL_MINORISSET(minorvers, n));
+				4, n, NFSCTL_MINORISSET(minorvers, n),
+				(n == 0) ? force4dot0 : 0);
 	}
 	if (!off--)
 		goto out;

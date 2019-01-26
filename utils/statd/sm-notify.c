@@ -494,7 +494,7 @@ main(int argc, char **argv)
 	else
 		progname = argv[0];
 
-	conf_init(NFS_CONFFILE);
+	conf_init_file(NFS_CONFFILE);
 	xlog_from_conffile("sm-notify");
 	opt_max_retry = conf_get_num("sm-notify", "retry-time", opt_max_retry / 60) * 60;
 	opt_srcport = conf_get_str("sm-notify", "outgoing-port");
@@ -503,6 +503,7 @@ main(int argc, char **argv)
 	s = conf_get_str("statd", "state-directory-path");
 	if (s && !nsm_setup_pathnames(argv[0], s))
 		exit(1);
+	opt_update_state = conf_get_bool("sm-notify", "update-state", opt_update_state);
 
 	while ((c = getopt(argc, argv, "dm:np:v:P:f")) != -1) {
 		switch (c) {
@@ -569,7 +570,7 @@ usage:		fprintf(stderr,
 		if (name == NULL)
 			exit(1);
 
-		strncpy(nsm_hostname, name, sizeof(nsm_hostname));
+		strncpy(nsm_hostname, name, sizeof(nsm_hostname)-1);
 		free(name);
 	}
 

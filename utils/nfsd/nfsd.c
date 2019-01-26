@@ -65,13 +65,14 @@ main(int argc, char **argv)
 	int hcounter = 0;
 	struct conf_list *hosts;
 	int	socket_up = 0;
-	unsigned int minorvers = 0;
-	unsigned int minorversset = 0;
+	unsigned int minorvers = NFSCTL_MINDEFAULT;
+	unsigned int minorversset = NFSCTL_MINDEFAULT;
 	unsigned int minormask = 0;
 	unsigned int versbits = NFSCTL_VERDEFAULT;
 	unsigned int protobits = NFSCTL_PROTODEFAULT;
 	int grace = -1;
 	int lease = -1;
+	int force4dot0 = 0;
 
 	progname = basename(argv[0]);
 	haddr = xmalloc(sizeof(char *));
@@ -80,8 +81,11 @@ main(int argc, char **argv)
 	xlog_syslog(0);
 	xlog_stderr(1);
 
-	conf_init(NFS_CONFFILE); 
+	conf_init_file(NFS_CONFFILE); 
 	xlog_from_conffile("nfsd");
+
+	nfssvc_get_minormask(&minormask);
+
 	count = conf_get_num("nfsd", "threads", count);
 	grace = conf_get_num("nfsd", "grace-time", grace);
 	lease = conf_get_num("nfsd", "lease-time", lease);
@@ -98,23 +102,25 @@ main(int argc, char **argv)
 	else
 		NFSCTL_TCPUNSET(protobits);
 	for (i = 2; i <= 4; i++) {
-		char tag[10];
+		char tag[20];
 		sprintf(tag, "vers%d", i);
-		if (conf_get_bool("nfsd", tag, NFSCTL_VERISSET(versbits, i)))
+		if (conf_get_bool("nfsd", tag, NFSCTL_VERISSET(versbits, i))) {
 			NFSCTL_VERSET(versbits, i);
-		else
+			if (i == 4)
+				minorvers = minorversset = minormask;
+		} else {
 			NFSCTL_VERUNSET(versbits, i);
+			if (i == 4) {
+				minorvers = 0;
+				minorversset = minormask;
+			}
+		}
 	}
 
-	nfssvc_get_minormask(&minormask);
 	/* We assume the kernel will default all minor versions to 'on',
 	 * and allow the config file to disable some.
 	 */
-	if (NFSCTL_VERISSET(versbits, 4)) {
-		NFSCTL_MINORSET(minorversset, 0);
-		NFSCTL_MINORSET(minorvers, 0);
-	}
-	for (i = 1; i <= NFS4_MAXMINOR; i++) {
+	for (i = NFS4_MINMINOR; i <= NFS4_MAXMINOR; i++) {
 		char tag[20];
 		sprintf(tag, "vers4.%d", i);
 		/* The default for minor version support is to let the
@@ -128,10 +134,14 @@ main(int argc, char **argv)
 		if (!conf_get_bool("nfsd", tag, 1)) {
 			NFSCTL_MINORSET(minorversset, i);
 			NFSCTL_MINORUNSET(minorvers, i);
+			if (i == 0)
+				force4dot0 = 1;
 		}
 		if (conf_get_bool("nfsd", tag, 0)) {
 			NFSCTL_MINORSET(minorversset, i);
 			NFSCTL_MINORSET(minorvers, i);
+			if (i == 0)
+				force4dot0 = 1;
 		}
 	}
 
@@ -192,6 +202,8 @@ main(int argc, char **argv)
 					}
 					NFSCTL_MINORSET(minorversset, i);
 					NFSCTL_MINORUNSET(minorvers, i);
+					if (i == 0)
+						force4dot0 = 1;
 					if (minorvers != 0)
 						break;
 				} else {
@@ -219,6 +231,8 @@ main(int argc, char **argv)
 					}
 					NFSCTL_MINORSET(minorversset, i);
 					NFSCTL_MINORSET(minorvers, i);
+					if (i == 0)
+						force4dot0 = 1;
 				} else
 					minorvers = minorversset = minormask;
 				/* FALLTHRU */
@@ -335,7 +349,7 @@ main(int argc, char **argv)
 	 * Timeouts must also be set before ports are created else we get
 	 * EBUSY.
 	 */
-	nfssvc_setvers(versbits, minorvers, minorversset);
+	nfssvc_setvers(versbits, minorvers, minorversset, force4dot0);
 	if (grace > 0)
 		nfssvc_set_time("grace", grace);
 	if (lease  > 0)

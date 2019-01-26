@@ -36,7 +36,7 @@
 
 #include <sys/types.h>
 #include <sys/time.h>
-#include <sys/poll.h>
+#include <sys/inotify.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -169,7 +169,7 @@ static int
 flush_nfsd_cache(char *path, time_t now)
 {
 	int fd;
-	char stime[20];
+	char stime[32];
 
 	sprintf(stime, "%ld\n", now);
 	fd = open(path, O_RDWR);
@@ -196,7 +196,7 @@ flush_nfsd_idmap_cache(void)
 	return ret;
 }
 
-void usage(char *progname)
+static void usage(char *progname)
 {
 	fprintf(stderr, "Usage: %s [-hfvCS] [-p path] [-c path]\n",
 		basename(progname));
@@ -205,15 +205,16 @@ void usage(char *progname)
 int
 main(int argc, char **argv)
 {
-	int fd = 0, opt, fg = 0, nfsdret = -1;
+	int wd = -1, opt, fg = 0, nfsdret = -1;
 	struct idmap_clientq icq;
-	struct event rootdirev, clntdirev, svrdirev;
+	struct event rootdirev, clntdirev, svrdirev, inotifyev;
 	struct event initialize;
 	struct passwd *pw;
 	struct group *gr;
 	struct stat sb;
 	char *xpipefsdir = NULL;
 	int serverstart = 1, clientstart = 1;
+	int inotify_fd;
 	int ret;
 	char *progname;
 	char *conf_path = NULL;
@@ -252,7 +253,7 @@ main(int argc, char **argv)
 			warn("Skipping configuration file \"%s\"", conf_path);
 			conf_path = NULL;
 		} else {
-			conf_init(conf_path);
+			conf_init_file(conf_path);
 			verbose = conf_get_num("General", "Verbosity", 0);
 			cache_entry_expiration = conf_get_num("General",
 					"Cache-Expiration", DEFAULT_IDMAP_CACHE_EXPIRY);
@@ -261,21 +262,29 @@ main(int argc, char **argv)
 				strlcpy(pipefsdir, xpipefsdir, sizeof(pipefsdir));
 			CONF_SAVE(nobodyuser, conf_get_str("Mapping", "Nobody-User"));
 			CONF_SAVE(nobodygroup, conf_get_str("Mapping", "Nobody-Group"));
+			if (conf_get_bool("General", "server-only", false))
+				clientstart = 0;
+			if (conf_get_bool("General", "client-only", false))
+				serverstart = 0;
 		}
 	} else {
 		conf_path = NFS_CONFFILE;
-		conf_init(conf_path);
+		conf_init_file(conf_path);
 		CONF_SAVE(xpipefsdir, conf_get_str("General", "Pipefs-Directory"));
 		if (xpipefsdir != NULL)
 			strlcpy(pipefsdir, xpipefsdir, sizeof(pipefsdir));
 
 		conf_path = _PATH_IDMAPDCONF;
-		conf_init(conf_path);
+		conf_init_file(conf_path);
 		verbose = conf_get_num("General", "Verbosity", 0);
 		cache_entry_expiration = conf_get_num("General",
 				"cache-expiration", DEFAULT_IDMAP_CACHE_EXPIRY);
 		CONF_SAVE(nobodyuser, conf_get_str("Mapping", "Nobody-User"));
 		CONF_SAVE(nobodygroup, conf_get_str("Mapping", "Nobody-Group"));
+		if (conf_get_bool("General", "server-only", false))
+			clientstart = 0;
+		if (conf_get_bool("General", "client-only", false))
+			serverstart = 0;
 	}
 
 	while ((opt = getopt(argc, argv, GETOPTSTR)) != -1)
@@ -310,7 +319,7 @@ main(int argc, char **argv)
 	if (!serverstart && !clientstart)
 		errx(1, "it is illegal to specify both -C and -S");
 
-	strncat(pipefsdir, "/nfs", sizeof(pipefsdir));
+	strncat(pipefsdir, "/nfs", sizeof(pipefsdir)-1);
 
 	daemon_init(fg);
 
@@ -373,18 +382,15 @@ main(int argc, char **argv)
 			}
 		}
 
-		if ((fd = open(pipefsdir, O_RDONLY)) == -1)
-			xlog_err("main: open(%s): %s", pipefsdir, strerror(errno));
-
-		if (fcntl(fd, F_SETSIG, SIGUSR1) == -1)
-			xlog_err("main: fcntl(%s): %s", pipefsdir, strerror(errno));
-
-		if (fcntl(fd, F_NOTIFY,
-			DN_CREATE | DN_DELETE | DN_MODIFY | DN_MULTISHOT) == -1) {
-			xlog_err("main: fcntl(%s): %s", pipefsdir, strerror(errno));
-			if (errno == EINVAL)
-				xlog_err("main: Possibly no Dnotify support in kernel.");
+		inotify_fd = inotify_init1(IN_NONBLOCK);
+		if (inotify_fd == -1) {
+			xlog_err("Unable to initialise inotify_init1: %s\n", strerror(errno));
+		} else {
+			wd = inotify_add_watch(inotify_fd, pipefsdir, IN_CREATE | IN_DELETE | IN_MODIFY);
+			if (wd < 0)
+				xlog_err("Unable to inotify_add_watch(%s): %s\n", pipefsdir, strerror(errno));
 		}
+
 		TAILQ_INIT(&icq);
 
 		/* These events are persistent */
@@ -394,6 +400,10 @@ main(int argc, char **argv)
 		signal_add(&clntdirev, NULL);
 		signal_set(&svrdirev, SIGHUP, svrreopen, NULL);
 		signal_add(&svrdirev, NULL);
+		if ( wd >= 0) {
+			event_set(&inotifyev, inotify_fd, EV_READ, dirscancb, &icq);
+			event_add(&inotifyev, NULL);
+		}
 
 		/* Fetch current state */
 		/* (Delay till start of event_dispatch to avoid possibly losing
@@ -402,7 +412,7 @@ main(int argc, char **argv)
 		evtimer_add(&initialize, &now);
 	}
 
-	if (nfsdret != 0 && fd == 0)
+	if (nfsdret != 0 && wd < 0)
 		xlog_err("main: Neither NFS client nor NFSd found");
 
 	daemon_ready();
@@ -420,7 +430,7 @@ dirscancb(int UNUSED(fd), short UNUSED(which), void *data)
 	int nent, i;
 	struct dirent **ents;
 	struct idmap_client *ic, *nextic;
-	char path[PATH_MAX];
+	char path[PATH_MAX+256]; /* + sizeof(d_name) */
 	struct idmap_clientq *icq = data;
 
 	nent = scandir(pipefsdir, &ents, NULL, alphasort);
@@ -923,7 +933,8 @@ static int
 getfield(char **bpp, char *fld, size_t fldsz)
 {
 	char *bp;
-	int val, n;
+	unsigned int val; 
+	int n;
 
 	while ((bp = strsep(bpp, " ")) != NULL && bp[0] == '\0')
 		;

@@ -50,6 +50,8 @@
 #include <rpc/rpc.h>
 #include <rpc/pmap_prot.h>
 #include <rpc/pmap_clnt.h>
+#include <net/if.h>
+#include <ifaddrs.h>
 
 #include "sockaddr.h"
 #include "xcommon.h"
@@ -811,8 +813,12 @@ int start_statd(void)
 			switch (pid) {
 			case 0: /* child */
 				setgroups(0, NULL);
-				setgid(0);
-				setuid(0);
+				if (setgid(0) < 0)
+					nfs_error(_("%s: setgid(0) failed: %s"),
+						progname, strerror(errno));
+				if (setuid(0) < 0)
+					nfs_error(_("%s: setuid(0) failed: %s"),
+						progname, strerror(errno));
 				execle(START_STATD, START_STATD, NULL, envp);
 				exit(1);
 			case -1: /* error */
@@ -1308,9 +1314,14 @@ nfs_nfs_version(char *type, struct mount_options *options, struct nfs_version *v
 		if (!(version->minor = strtol(version_val, &cptr, 10)) && cptr == version_val)
 			goto ret_error;
 		version->v_mode = V_SPECIFIC;
-	} else if (version->major > 3 && *cptr == '\0')
-		version->v_mode = V_GENERAL;
-
+	} else if (version->major > 3 && *cptr == '\0') {
+		version_val = po_get(options, "minorversion");
+		if (version_val != NULL) {
+			version->minor = strtol(version_val, &cptr, 10);
+			version->v_mode = V_SPECIFIC;
+		} else 
+			version->v_mode = V_GENERAL;
+	}
 	if (*cptr != '\0')
 		goto ret_error;
 
@@ -1749,4 +1760,49 @@ int nfs_umount_do_umnt(struct mount_options *options,
 		return EX_FAIL;
 
 	return EX_SUCCESS;
+}
+
+int nfs_is_inaddr_any(struct sockaddr *nfs_saddr)
+{
+	switch (nfs_saddr->sa_family) {
+	case AF_INET: {
+		if (((struct sockaddr_in *)nfs_saddr)->sin_addr.s_addr ==
+				INADDR_ANY)
+			return 1;
+		break;
+	}
+	case AF_INET6:
+		if (!memcmp(&((struct sockaddr_in6 *)nfs_saddr)->sin6_addr,
+				&in6addr_any, sizeof(in6addr_any)))
+			return 1;
+		break;
+	}
+	return 0;
+}
+
+int nfs_addr_matches_localips(struct sockaddr *nfs_saddr)
+{
+	struct ifaddrs *myaddrs, *ifa;
+	int found = 0;
+
+	/* acquire exiting network interfaces */
+	if (getifaddrs(&myaddrs) != 0)
+		return 0;
+
+	/* interate over the available interfaces and check if we
+	 * we find a match to the supplied clientaddr value
+	 */
+	for (ifa = myaddrs; ifa != NULL; ifa = ifa->ifa_next) {
+		if (ifa->ifa_addr == NULL)
+			continue;
+		if (!(ifa->ifa_flags & IFF_UP))
+			continue;
+		if (!memcmp(ifa->ifa_addr, nfs_saddr,
+				sizeof(struct sockaddr))) {
+			found = 1;
+			break;
+		}
+	}
+	freeifaddrs(myaddrs);
+	return found;
 }

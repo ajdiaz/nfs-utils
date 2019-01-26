@@ -107,7 +107,7 @@ main(int argc, char **argv)
 	xlog_stderr(1);
 	xlog_syslog(0);
 
-	conf_init(NFS_CONFFILE);
+	conf_init_file(NFS_CONFFILE);
 	xlog_from_conffile("exportfs");
 
 	/* NOTE: following uses "mountd" section of nfs.conf !!!! */
@@ -695,10 +695,6 @@ dump(int verbose, int export_format)
 				continue;
 			}
 			c = '(';
-			if (ep->e_flags & NFSEXP_READONLY)
-				c = dumpopt(c, "ro");
-			else
-				c = dumpopt(c, "rw");
 			if (ep->e_flags & NFSEXP_ASYNC)
 				c = dumpopt(c, "async");
 			else
